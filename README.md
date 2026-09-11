@@ -16,6 +16,7 @@
 - [数据备份与恢复](#数据备份与恢复)
 - [接口契约与二次开发](#接口契约与二次开发)
 - [GitHub → GHCR 自动构建](#github--ghcr-自动构建)
+- [推送后自动部署到服务器（GitHub Secrets）](#推送后自动部署到服务器github-secrets)
 - [服务器 Docker 部署](#服务器-docker-部署)
 - [API 速查表](#api-速查表)
 - [项目目录结构](#项目目录结构)
@@ -257,7 +258,85 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-## 服务器 Docker 部署
+## 推送后自动部署到服务器（GitHub Secrets）
+
+工作流在镜像构建任务后追加了 **deploy 任务**（仅推送 `main` 分支触发；PR、tag 不会触发；同一时间只允许一个部署任务）：
+
+```text
+git push origin main
+   └─▶ ① docker 任务：buildx 构建 amd64/arm64 → 推送 GHCR
+          └─▶ ② deploy 任务：SCP 同步 compose 文件 → SSH 执行
+                 .env 注入 →（私有包可选登录 GHCR）→ docker compose pull/up → 健康检查
+```
+
+### 第一步：生成一对专用部署密钥
+
+在你本地电脑（不是服务器）执行，回车两次不设密码：
+
+```bash
+ssh-keygen -t ed25519 -f cims_deploy -C "github-actions-deploy"
+```
+
+生成 `cims_deploy`（私钥）和 `cims_deploy.pub`（公钥）。把**公钥**安装到服务器：
+
+```bash
+# 自行 SSH 登录服务器后执行（如使用非 root 用户，将该用户加入 docker 组：sudo usermod -aG docker 用户名）
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+echo "这里粘贴 cims_deploy.pub 的全部内容" >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+```
+
+> 私钥只放进 GitHub Secret，不要提交到仓库，对话中也不要粘贴完整私钥。
+
+### 第二步：在仓库中配置 Secrets
+
+进入 GitHub 仓库 → **Settings → Secrets and variables → Actions → New repository secret**，逐个添加：
+
+| Secret 名称 | 必填 | 说明 |
+| --- | --- | --- |
+| `SSH_HOST` | 是 | 服务器公网 IP 或域名 |
+| `SSH_USERNAME` | 是 | SSH 登录用户（如 `root`、`ubuntu`；非 root 需在 docker 组） |
+| `SSH_KEY` | 是 | `cims_deploy` 私钥文件的**完整内容**（含 `-----BEGIN/END...-----` 两行） |
+| `SSH_PORT` | 否 | SSH 端口，默认 22 |
+| `DEPLOY_DIR` | 否 | 服务器部署目录，默认 `/opt/cims` |
+| `DEPLOY_ENV` | 否 | 完整 `.env` 内容（多行直接整段粘贴）；**配置后每次部署都会覆盖服务器 .env** |
+| `GHCR_PAT` | 视情况 | 镜像包为**私有**时必填：勾选了 `read:packages` 权限的 GitHub PAT；包改公开则无需配置 |
+
+`DEPLOY_ENV` 的内容就是部署环境变量（参考 [.env.example](.env.example)），例如：
+
+```env
+IMAGE_URL=ghcr.io/oceandriel/webbake:latest
+SECRET_KEY=随机长字符串
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=强密码
+API_TOKEN=随机长Token
+SMTP_HOST=smtp.qq.com
+SMTP_PORT=465
+SMTP_USER=你的邮箱@qq.com
+SMTP_PASSWORD=授权码
+SMTP_SECURITY=ssl
+```
+
+- 不配置 `DEPLOY_ENV` 时，工作流沿用服务器上手动维护的 `$DEPLOY_DIR/.env`，但首次部署前该文件必须已存在
+- 修改 Secret 后**下一次推 main 即生效**，无需登录服务器
+- 安全组/防火墙需放行服务端口（默认 `8000`），并确保 GitHub 的连接能访问 SSH 端口
+
+### 第三步：服务器一次性准备（仅首次）
+
+服务器需已安装 Docker Engine 与 Docker Compose 插件：
+
+```bash
+docker --version && docker compose version    # 验证
+mkdir -p /opt/cims                            # 与 DEPLOY_DIR 保持一致；不配置 DEPLOY_ENV 时在此目录放好 .env
+```
+
+### 第四步：触发与验证
+
+推送到 `main` 后，在仓库 **Actions** 页面可看到 `docker` → `deploy` 两个任务依次执行。部署脚本最后会请求 `http://127.0.0.1:8000/health` 做健康检查，失败则本次部署标记为失败（旧容器仍在运行，可在日志中排查）。
+
+**回滚**：SSH 登录服务器，把 `.env` 中的 `IMAGE_URL` 改为上一个可用的 `sha-xxxxxxxx`（镜像标签见 Actions 构建日志或 Packages），执行 `docker compose up -d`。
+
+## 服务器 Docker 部署（手动方式）
 
 适用于任意安装了 Docker / Docker Compose 的 Linux 服务器（x86 或 ARM 均可）。
 

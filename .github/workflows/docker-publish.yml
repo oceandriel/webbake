@@ -64,3 +64,98 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # ============================================================
+  # 推送到 main 且镜像构建成功后，SSH 登录服务器自动部署
+  # 需要在 GitHub 仓库 Settings → Secrets and variables → Actions
+  # 配置以下 Secrets（详见 README“自动部署”章节）：
+  #   SSH_HOST       服务器 IP 或域名（必填）
+  #   SSH_USERNAME   SSH 登录用户（必填，如 root / ubuntu）
+  #   SSH_KEY        SSH 私钥完整内容（必填，建议专用部署密钥）
+  #   SSH_PORT       SSH 端口（可选，默认 22）
+  #   DEPLOY_DIR     服务器部署目录（可选，默认 /opt/cims）
+  #   DEPLOY_ENV     完整 .env 文件内容（可选；提供则每次部署覆盖服务器 .env）
+  #   GHCR_PAT       拉取私有镜像包用的 PAT（read:packages）；镜像包公开则可不配
+  # ============================================================
+  deploy:
+    needs: docker
+    runs-on: ubuntu-latest
+    # 仅推送 main 且已在仓库 Secrets 中配置 SSH 信息时才执行部署，否则任务自动跳过
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      secrets.SSH_HOST != '' &&
+      secrets.SSH_USERNAME != '' &&
+      secrets.SSH_KEY != ''
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check required secrets
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+        run: |
+          missing=0
+          for v in SSH_HOST SSH_USERNAME SSH_KEY; do
+            if [ -z "${!v}" ]; then echo "::error::缺少必需的 Secret: $v"; missing=1; fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+      - name: Upload docker-compose.yml to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          port: ${{ secrets.SSH_PORT }}
+          key: ${{ secrets.SSH_KEY }}
+          source: "docker-compose.yml"
+          target: ${{ secrets.DEPLOY_DIR || '/opt/cims' }}
+          overwrite: true
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          DEPLOY_DIR: ${{ secrets.DEPLOY_DIR || '/opt/cims' }}
+          DEPLOY_ENV: ${{ secrets.DEPLOY_ENV }}
+          GHCR_PAT: ${{ secrets.GHCR_PAT }}
+          GHCR_USER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          port: ${{ secrets.SSH_PORT }}
+          key: ${{ secrets.SSH_KEY }}
+          envs: DEPLOY_DIR,DEPLOY_ENV,GHCR_PAT,GHCR_USER,REPO_NAME
+          script: |
+            set -euo pipefail
+            cd "$DEPLOY_DIR"
+
+            if [ -n "$DEPLOY_ENV" ]; then
+              umask 077
+              printf '%s' "$DEPLOY_ENV" > .env
+              echo "已通过 DEPLOY_ENV Secret 写入 .env"
+            else
+              echo "未配置 DEPLOY_ENV Secret，沿用服务器现有 .env"
+            fi
+            test -f .env || { echo "部署失败：$DEPLOY_DIR 下不存在 .env，且未配置 DEPLOY_ENV"; exit 1; }
+            grep -q '^IMAGE_URL=' .env || echo "提醒：.env 中建议包含 IMAGE_URL=ghcr.io/$GHCR_USER/$REPO_NAME:latest"
+
+            if [ -n "$GHCR_PAT" ]; then
+              echo "$GHCR_PAT" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+            fi
+
+            docker compose pull
+            docker compose up -d --remove-orphans
+
+            echo "等待服务启动并做健康检查..."
+            sleep 6
+            curl -fsS --retry 5 --retry-delay 3 http://127.0.0.1:8000/health
+            echo ""
+            echo "部署成功 ✅"
+
+            docker image prune -f
