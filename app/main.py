@@ -16,6 +16,7 @@ from app.api import (
     admin_customers,
     admin_fields,
     admin_projects,
+    admin_settings,
     auth,
     public,
     v1,
@@ -62,6 +63,7 @@ app.include_router(admin_projects.router)
 app.include_router(admin_fields.router)
 app.include_router(admin_customers.router)
 app.include_router(admin_backup.router)
+app.include_router(admin_settings.router)
 app.include_router(public.router)
 app.include_router(v1.router)
 

@@ -42,13 +42,38 @@ def active_fields(db: Session, project_id: int) -> list[FormField]:
 
 
 def create_customer(db: Session, project_id: int, payload: dict) -> Customer:
-    get_project_or_404(db, project_id)
-    cleaned = validate_submission(active_fields(db, project_id), payload)
+    project = get_project_or_404(db, project_id)
+    fields = active_fields(db, project_id)
+    cleaned = validate_submission(fields, payload)
     customer = Customer(project_id=project_id, data=cleaned)
     db.add(customer)
+    # 先落库再通知，避免“通知已发但数据没存”的不一致
     db.commit()
     db.refresh(customer)
+    _maybe_notify_submission(project, fields, customer)
     return customer
+
+
+def _maybe_notify_submission(project: Project, fields: list[FormField], customer: Customer) -> None:
+    """按项目配置异步发送邮件提醒；任何异常都不得影响提交结果。"""
+    try:
+        from app.core import email_utils
+
+        if not (project.notify_enabled and project.notify_emails and email_utils.smtp_configured()):
+            return
+
+        rows = [(field.label, customer.data.get(field.key)) for field in fields]
+        submitted_at = customer.created_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+        email_utils.notify_submission(
+            project_name=project.name,
+            recipients=list(project.notify_emails),
+            rows=rows,
+            submitted_at=submitted_at,
+        )
+    except Exception:  # noqa: BLE001 - 通知失败仅记录日志
+        import logging
+
+        logging.getLogger("cims.mail").exception("触发提交提醒失败，已忽略（不影响客户提交）")
 
 
 def update_customer(db: Session, customer: Customer, payload: dict) -> Customer:

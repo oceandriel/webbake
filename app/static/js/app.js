@@ -138,6 +138,7 @@ function e_focus() {
 /* ---------- 后台外壳 ---------- */
 const NAV_ITEMS = [
   { hash: "#/projects", icon: "▤", label: "项目管理" },
+  { hash: "#/email", icon: "✉", label: "邮件提醒" },
   { hash: "#/backup", icon: "⤓", label: "备份与恢复" },
   { hash: "#/contract", icon: "{ }", label: "接口契约" },
 ];
@@ -169,6 +170,7 @@ function renderShell(hash) {
   if (hash === "#/projects" || hash === "#/" || hash === "") return projectsView();
   const m = hash.match(/^#\/projects\/(\d+)/);
   if (m) return projectView(Number(m[1]));
+  if (hash === "#/email") return emailView();
   if (hash === "#/backup") return backupView();
   if (hash === "#/contract") return contractView();
   return projectsView();
@@ -236,7 +238,9 @@ function renderProjects(res) {
         (p) =>
           `<tr>
             <td>${p.id}</td>
-            <td><a href="#/projects/${p.id}">${esc(p.name)}</a></td>
+            <td><a href="#/projects/${p.id}">${esc(p.name)}</a>${
+              p.notify_enabled ? ' <span title="已开启邮件提醒">✉</span>' : ""
+            }</td>
             <td class="muted">${p.slug ? esc(p.slug) : "—"}</td>
             <td>${p.is_active ? '<span class="badge on">启用</span>' : '<span class="badge off">停用</span>'}</td>
             <td class="muted">${fmtTime(p.created_at)}</td>
@@ -276,7 +280,16 @@ function projectDialog(project, onSaved) {
       '<div class="form-row"><label class="field-label">项目描述</label>' +
       `<textarea id="fDesc" rows="3">${esc(p.description || "")}</textarea></div>` +
       '<div class="form-row"><label class="switch-line"><label>' +
-      `<input type="checkbox" id="fActive" ${p.is_active !== false ? "checked" : ""} /> 启用项目（停用后客户无法访问表单）</label></label></div>`,
+      `<input type="checkbox" id="fActive" ${p.is_active !== false ? "checked" : ""} /> 启用项目（停用后客户无法访问表单）</label></label></div>` +
+      '<div style="border-top:1px solid var(--border);margin:18px 0 14px"></div>' +
+      '<div class="form-row"><label class="switch-line"><label>' +
+      `<input type="checkbox" id="fNotify" ${p.notify_enabled ? "checked" : ""} /> ` +
+      "收到客户表单提交时发送邮件提醒</label></label>" +
+      "<small>需先在「邮件提醒」页面配置好 SMTP 服务（环境变量）</small></div>" +
+      '<div class="form-row"><label class="field-label">提醒收件人（多个邮箱用逗号或换行分隔）</label>' +
+      `<textarea id="fNotifyEmails" rows="2" placeholder="sales@example.com, boss@example.com">${esc(
+        (p.notify_emails || []).join("\n")
+      )}</textarea></div>`,
     submitText: project ? "保存修改" : "创建",
     async onSubmit() {
       const payload = {
@@ -284,14 +297,27 @@ function projectDialog(project, onSaved) {
         slug: document.getElementById("fSlug").value.trim(),
         description: document.getElementById("fDesc").value,
         is_active: document.getElementById("fActive").checked,
+        notify_enabled: document.getElementById("fNotify").checked,
+        notify_emails: splitEmails(document.getElementById("fNotifyEmails").value),
       };
       if (!payload.name) return toast("请填写项目名称", "error"), true;
+      if (payload.notify_enabled && !payload.notify_emails.length) {
+        toast("已开启邮件提醒，请至少填写一个收件人邮箱", "error");
+        return true;
+      }
       if (project) await API.put("/api/admin/projects/" + project.id, payload);
       else await API.post("/api/admin/projects", payload);
       toast(project ? "已保存" : "项目已创建", "success");
       onSaved && onSaved();
     },
   });
+}
+
+function splitEmails(text) {
+  return text
+    .split(/[,，;；\n\r\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 async function deleteProject(project, onDone) {
@@ -322,6 +348,11 @@ async function projectView(id) {
     '<div class="card"><div class="toolbar" style="margin-bottom:0">' +
     "<div><h2 style='margin-bottom:4px'>" + esc(project.name) +
     (project.is_active ? ' <span class="badge on">启用中</span>' : ' <span class="badge off">已停用</span>') +
+    (project.notify_enabled
+      ? ` <span class="badge type" title="${esc((project.notify_emails || []).join(", "))}">✉ 邮件提醒 · ${
+          (project.notify_emails || []).length
+        } 个收件人</span>`
+      : "") +
     "</h2>" +
     '<div class="muted">客户填报链接：<a href="' + esc(publicUrl) + '" target="_blank">' + esc(publicUrl) + "</a></div></div>" +
     '<div class="left"><button class="secondary" id="copyLink">复制链接</button>' +
@@ -657,6 +688,91 @@ async function customerDialog(projectId, customer) {
       }
     },
   });
+}
+
+/* ---------- 邮件提醒 ---------- */
+function emailView() {
+  document.getElementById("pageTitle").textContent = "邮件提醒";
+  const view = document.getElementById("view");
+  view.innerHTML =
+    '<div class="card"><h2>工作方式</h2>' +
+    "<ul>" +
+    "<li><b>第一步（服务器配置）：</b>SMTP 服务器信息通过环境变量配置（<code>SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASSWORD / SMTP_SECURITY</code>），" +
+    "修改后重启服务生效。凭据不会出现在页面或数据库中。</li>" +
+    "<li><b>第二步（按项目开启）：</b>在「项目管理 → 编辑项目」中勾选“收到客户表单提交时发送邮件提醒”，并填写收件人邮箱。</li>" +
+    "<li>客户每次成功提交表单后，系统会<b>异步</b>向该项目的收件人发送一封包含全部填写内容的邮件；邮件服务故障不影响客户提交。</li>" +
+    "</ul></div>" +
+    '<div class="card" id="mailStatus"><h2>SMTP 服务状态</h2><div class="empty">加载中...</div></div>' +
+    '<div class="card"><h2>发送测试邮件</h2>' +
+    '<div class="toolbar" style="margin-bottom:0">' +
+    '<input id="testEmail" style="max-width:320px" placeholder="输入接收测试邮件的邮箱" />' +
+    '<button id="btnTestEmail">发送测试邮件</button></div></div>';
+
+  document.getElementById("btnTestEmail").onclick = async () => {
+    const email = document.getElementById("testEmail").value.trim();
+    if (!email) return toast("请输入邮箱地址", "error");
+    const btn = document.getElementById("btnTestEmail");
+    btn.disabled = true;
+    btn.textContent = "发送中...";
+    try {
+      const res = await API.post("/api/admin/settings/email/test", { email });
+      toast(res.message || "测试邮件已发送", "success");
+    } catch (err) {
+      toast(errMessage(err, "发送失败"), "error");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "发送测试邮件";
+    }
+  };
+
+  loadMailStatus();
+}
+
+async function loadMailStatus() {
+  const box = document.getElementById("mailStatus");
+  let s;
+  try {
+    s = await API.get("/api/admin/settings/email");
+  } catch (err) {
+    if (err.status === 401) return forceLogout();
+    box.innerHTML = "<h2>SMTP 服务状态</h2>" +
+      '<div class="empty">加载失败：' + esc(errMessage(err)) + "</div>";
+    return;
+  }
+
+  const statusBadge = s.smtp_configured
+    ? '<span class="badge on">已配置</span>'
+    : '<span class="badge off">未配置</span>';
+  const rows = [
+    ["状态", statusBadge],
+    ["SMTP 服务器", esc(s.smtp_host || "—") + (s.smtp_host ? ":" + esc(String(s.smtp_port)) : "")],
+    ["加密方式", esc(s.smtp_security || "—")],
+    ["登录账号", esc(s.smtp_user || "—")],
+    ["发件人", esc(s.mail_from || "—")],
+  ]
+    .map(([k, v]) => `<tr><th style="width:130px">${k}</th><td>${v}</td></tr>`)
+    .join("");
+
+  const enabledList = s.enabled_projects.length
+    ? s.enabled_projects
+        .map(
+          (p) =>
+            `<tr><td><a href="#/projects/${p.id}">${esc(p.name)}</a></td>` +
+            `<td>${esc((p.notify_emails || []).join("、"))}</td></tr>`
+        )
+        .join("")
+    : '<tr><td colspan="2" class="empty">暂无开启提醒的项目</td></tr>';
+
+  box.innerHTML =
+    "<h2>SMTP 服务状态</h2>" +
+    (s.smtp_configured
+      ? ""
+      : '<p class="muted">未检测到 SMTP 配置。请在服务器的 .env（或 docker compose 环境变量）中设置后重启服务，可参考 .env.example 中的常见服务商参数。</p>') +
+    '<div class="table-wrap"><table>' + rows + "</table></div>" +
+    '<h2 style="margin-top:20px">已开启提醒的项目</h2>' +
+    '<div class="table-wrap"><table><thead><tr><th>项目</th><th>收件人</th></tr></thead><tbody>' +
+    enabledList +
+    "</tbody></table></div>";
 }
 
 /* ---------- 备份与恢复 ---------- */

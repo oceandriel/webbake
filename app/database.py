@@ -82,6 +82,32 @@ def rebind_engine(database_url: str) -> None:
     SessionLocal.configure(bind=engine)
 
 
+def _run_lightweight_migrations() -> None:
+    """对已存在的 SQLite 库做向后兼容的补列迁移（SQLAlchemy create_all 不会改已有表）。"""
+    if not settings.database_url.startswith("sqlite"):
+        return
+    from sqlalchemy import text
+
+    additions = {
+        "projects": [
+            ("notify_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("notify_emails", "JSON NOT NULL DEFAULT '[]'"),
+        ],
+    }
+    with engine.begin() as conn:
+        for table, columns in additions.items():
+            existing = {
+                row[1]
+                for row in conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+            }
+            if not existing:
+                # 表尚不存在，create_all 会按最新模型创建
+                continue
+            for column, ddl in columns:
+                if column not in existing:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+
+
 def init_db() -> None:
     # 导入模型以注册到同一套 Base.metadata
     from app import models  # noqa: F401
@@ -90,6 +116,7 @@ def init_db() -> None:
 
     ensure_data_dir(settings.database_url)
     Base.metadata.create_all(bind=engine)
+    _run_lightweight_migrations()
 
     # 初始化管理员账号（用户表为空时）
     with SessionLocal() as db:

@@ -27,9 +27,29 @@ class Settings(BaseSettings):
     # CORS：逗号分隔，* 表示全部放行（独立部署的前端跨域访问）
     cors_origins: str = "*"
 
+    # ===== 邮件提醒（SMTP）=====
+    # 留空 SMTP_HOST 即视为未启用邮件能力；启用后可在每个项目中独立开关提醒
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    # 发件人地址，留空时回退为 SMTP_USER
+    smtp_from: str = ""
+    # starttls（587 端口常用）/ ssl（465 端口常用）/ none
+    smtp_security: str = "starttls"
+    smtp_timeout: int = 15
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def smtp_configured(self) -> bool:
+        return bool(self.smtp_host and self.smtp_user)
+
+    @property
+    def mail_from(self) -> str:
+        return self.smtp_from or self.smtp_user
 
 
 @lru_cache
