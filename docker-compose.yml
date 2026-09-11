@@ -1,0 +1,27 @@
+# 任意服务器上拉取 GHCR 镜像并运行：
+#   1. 在本目录创建 .env（可参考 .env.example），填入 SECRET_KEY / ADMIN_PASSWORD / API_TOKEN
+#   2. docker compose up -d
+#   3. 浏览器打开 http://服务器IP:8000
+services:
+  cims:
+    # 在 .env 中设置 IMAGE_URL=ghcr.io/你的用户名/你的仓库名:latest
+    image: ${IMAGE_URL:-ghcr.io/OWNER/REPO:latest}
+    container_name: cims
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # 容器内固定使用挂载卷中的 SQLite 文件（云端数据库）
+      DATABASE_URL: sqlite:////data/cims.db
+      SECRET_KEY: ${SECRET_KEY}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123456}
+      API_TOKEN: ${API_TOKEN}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-720}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+    volumes:
+      # 数据库持久化到 Docker 卷；备份文件通过后台 UI 下载到本地保存
+      - cims-data:/data
+
+volumes:
+  cims-data:
