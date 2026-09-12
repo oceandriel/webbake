@@ -81,9 +81,11 @@ jobs:
   deploy:
     needs: docker
     runs-on: ubuntu-latest
-    # 仅推送 main 时进入部署任务；Secrets 上下文不允许出现在 job.if 中，
+    # 推送 main 或手动 workflow_dispatch 时执行部署；Secrets 上下文不允许出现在 job.if 中，
     # 因此是否实际部署由下方“Check required secrets”步骤决定（未配置则安全跳过）
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     concurrency:
       group: production-deploy
       cancel-in-progress: false
