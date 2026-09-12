@@ -1,7 +1,7 @@
 # 任意服务器上拉取 GHCR 镜像并运行：
 #   1. 在本目录创建 .env（可参考 .env.example），填入 SECRET_KEY / ADMIN_PASSWORD / API_TOKEN
 #   2. docker compose up -d
-#   3. 浏览器打开 http://服务器IP:8000
+#   3. 浏览器打开 http://服务器IP:8000（可用 APP_PORT 修改宿主机对外端口）
 services:
   cims:
     # 在 .env 中设置 IMAGE_URL=ghcr.io/你的用户名/你的仓库名:latest
@@ -9,7 +9,8 @@ services:
     container_name: cims
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      # 宿主机对外端口由 APP_PORT 控制（默认 8000），容器内固定监听 8000
+      - "${APP_PORT:-8000}:8000"
     environment:
       # 容器内固定使用挂载卷中的 SQLite 文件（云端数据库）
       DATABASE_URL: sqlite:////data/cims.db

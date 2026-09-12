@@ -75,6 +75,7 @@ jobs:
   #   SSH_PORT       SSH 端口（可选，默认 22）
   #   DEPLOY_DIR     服务器部署目录（可选，默认 /opt/cims）
   #   DEPLOY_ENV     完整 .env 文件内容（可选；提供则每次部署覆盖服务器 .env）
+  #   APP_PORT       宿主机对外访问端口（可选，默认 8000；容器内固定 8000）
   #   GHCR_PAT       拉取私有镜像包用的 PAT（read:packages）；镜像包公开则可不配
   # ============================================================
   deploy:
@@ -122,6 +123,7 @@ jobs:
         env:
           DEPLOY_DIR: ${{ secrets.DEPLOY_DIR || '/opt/cims' }}
           DEPLOY_ENV: ${{ secrets.DEPLOY_ENV }}
+          APP_PORT: ${{ secrets.APP_PORT }}
           GHCR_PAT: ${{ secrets.GHCR_PAT }}
           GHCR_USER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.repository.name }}
@@ -130,9 +132,13 @@ jobs:
           username: ${{ secrets.SSH_USERNAME }}
           port: ${{ secrets.SSH_PORT }}
           key: ${{ secrets.SSH_KEY }}
-          envs: DEPLOY_DIR,DEPLOY_ENV,GHCR_PAT,GHCR_USER,REPO_NAME
+          envs: DEPLOY_DIR,DEPLOY_ENV,APP_PORT,GHCR_PAT,GHCR_USER,REPO_NAME
           script: |
             set -euo pipefail
+            # 可选 Secret 为空时兜底，避免 set -u 报未绑定变量
+            DEPLOY_ENV="${DEPLOY_ENV:-}"
+            APP_PORT="${APP_PORT:-}"
+            GHCR_PAT="${GHCR_PAT:-}"
             cd "$DEPLOY_DIR"
 
             if [ -n "$DEPLOY_ENV" ]; then
@@ -145,6 +151,15 @@ jobs:
             test -f .env || { echo "部署失败：$DEPLOY_DIR 下不存在 .env，且未配置 DEPLOY_ENV"; exit 1; }
             grep -q '^IMAGE_URL=' .env || echo "提醒：.env 中建议包含 IMAGE_URL=ghcr.io/$GHCR_USER/$REPO_NAME:latest"
 
+            # 宿主机对外端口优先级：APP_PORT Secret > 服务器 .env > 默认 8000
+            if [ -n "$APP_PORT" ]; then
+              export APP_PORT
+            else
+              env_port="$(grep -E '^APP_PORT=' .env | tail -n1 | cut -d= -f2 || true)"
+              export APP_PORT="${env_port:-8000}"
+            fi
+            echo "本次部署宿主机端口：$APP_PORT -> 容器 8000"
+
             if [ -n "$GHCR_PAT" ]; then
               echo "$GHCR_PAT" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
             fi
@@ -152,9 +167,9 @@ jobs:
             docker compose pull
             docker compose up -d --remove-orphans
 
-            echo "等待服务启动并做健康检查..."
+            echo "等待服务启动并做健康检查（端口 $APP_PORT）..."
             sleep 6
-            curl -fsS --retry 5 --retry-delay 3 http://127.0.0.1:8000/health
+            curl -fsS --retry 5 --retry-delay 3 "http://127.0.0.1:$APP_PORT/health"
             echo ""
             echo "部署成功 ✅"
 

@@ -119,6 +119,7 @@ uvicorn app.main:app --reload
 | `SMTP_SECURITY` | 否 | `ssl` | 加密方式：`ssl`（465）/ `starttls`（587）/ `none` |
 | `SMTP_TIMEOUT` | 否 | `15` | 发信超时秒数 |
 | `IMAGE_URL` | 部署用 | — | 仅 `docker compose` 使用：GHCR 镜像地址 |
+| `APP_PORT` | 否 | `8000` | 仅 `docker compose` 使用：宿主机对外端口（容器内固定 8000）；自动部署时由同名 Secret 注入 |
 
 ## 后台使用指南
 
@@ -300,7 +301,10 @@ chmod 600 ~/.ssh/authorized_keys
 | `SSH_PORT` | 否 | SSH 端口，默认 22 |
 | `DEPLOY_DIR` | 否 | 服务器部署目录，默认 `/opt/cims` |
 | `DEPLOY_ENV` | 否 | 完整 `.env` 内容（多行直接整段粘贴）；**配置后每次部署都会覆盖服务器 .env** |
+| `APP_PORT` | 否 | 宿主机对外访问端口，默认 `8000`（容器内固定 8000）。改端口后下次部署自动重建端口映射，记得同步放行安全组 |
 | `GHCR_PAT` | 视情况 | 镜像包为**私有**时必填：勾选了 `read:packages` 权限的 GitHub PAT；包改公开则无需配置 |
+
+> 端口取值优先级：`APP_PORT` Secret ＞ 服务器 `.env` 中的 `APP_PORT` ＞ 默认 `8000`。
 
 `DEPLOY_ENV` 的内容就是部署环境变量（参考 [.env.example](.env.example)），例如：
 
@@ -310,6 +314,7 @@ SECRET_KEY=随机长字符串
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=强密码
 API_TOKEN=随机长Token
+APP_PORT=8000
 SMTP_HOST=smtp.qq.com
 SMTP_PORT=465
 SMTP_USER=你的邮箱@qq.com
@@ -319,7 +324,7 @@ SMTP_SECURITY=ssl
 
 - 不配置 `DEPLOY_ENV` 时，工作流沿用服务器上手动维护的 `$DEPLOY_DIR/.env`，但首次部署前该文件必须已存在
 - 修改 Secret 后**下一次推 main 即生效**，无需登录服务器
-- 安全组/防火墙需放行服务端口（默认 `8000`），并确保 GitHub 的连接能访问 SSH 端口
+- 安全组/防火墙需放行 SSH 端口（默认 22）与服务端口（`APP_PORT`，默认 8000）；修改 `APP_PORT` 后旧端口自动释放，需放行新端口才能访问
 
 ### 第三步：服务器一次性准备（仅首次）
 
