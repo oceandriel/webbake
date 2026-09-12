@@ -81,33 +81,34 @@ jobs:
   deploy:
     needs: docker
     runs-on: ubuntu-latest
-    # 仅推送 main 且已在仓库 Secrets 中配置 SSH 信息时才执行部署，否则任务自动跳过
-    if: >-
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
-      secrets.SSH_HOST != '' &&
-      secrets.SSH_USERNAME != '' &&
-      secrets.SSH_KEY != ''
+    # 仅推送 main 时进入部署任务；Secrets 上下文不允许出现在 job.if 中，
+    # 因此是否实际部署由下方“Check required secrets”步骤决定（未配置则安全跳过）
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     concurrency:
       group: production-deploy
       cancel-in-progress: false
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Check required secrets
+        id: check
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
           SSH_KEY: ${{ secrets.SSH_KEY }}
         run: |
-          missing=0
-          for v in SSH_HOST SSH_USERNAME SSH_KEY; do
-            if [ -z "${!v}" ]; then echo "::error::缺少必需的 Secret: $v"; missing=1; fi
-          done
-          [ "$missing" -eq 0 ] || exit 1
+          if [ -z "$SSH_HOST" ] || [ -z "$SSH_USERNAME" ] || [ -z "$SSH_KEY" ]; then
+            echo "未配置 SSH Secrets（SSH_HOST / SSH_USERNAME / SSH_KEY），跳过本次部署。"
+            echo "::notice::配置好上述 Secrets 后，下一次推送 main 或手动 Re-run 即可触发部署。"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.check.outputs.skip == 'false'
+        uses: actions/checkout@v4
 
       - name: Upload docker-compose.yml to server
+        if: steps.check.outputs.skip == 'false'
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -119,6 +120,7 @@ jobs:
           overwrite: true
 
       - name: Deploy over SSH
+        if: steps.check.outputs.skip == 'false'
         uses: appleboy/ssh-action@v1.2.0
         env:
           DEPLOY_DIR: ${{ secrets.DEPLOY_DIR || '/opt/cims' }}
